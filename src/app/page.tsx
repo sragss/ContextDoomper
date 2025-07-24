@@ -3,8 +3,50 @@
 import { useState, useEffect, useRef } from 'react';
 import { Octokit } from '@octokit/rest';
 import { Copy } from 'lucide-react';
+import { EchoProvider, useEcho, useEchoOpenAI } from '@zdql/echo-react-sdk';
 
 const CLIENT_ID = process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID!;
+
+const echoConfig = {
+  appId: '3474f80b-4caa-4aab-867b-793f3abeef29',
+  apiUrl: 'https://echo.merit.systems',
+  redirectUri: process.env.NEXT_PUBLIC_ECHO_REDIRECT_URI || 'http://localhost:3000',
+};
+
+// Files larger than ~2500 LOC (150KB) are unchecked by default
+const MAX_AUTO_SELECT_SIZE = 150000;
+
+// Prevent infinite recursion and API overload
+const DIRECTORY_DEPTH_CAP = 5;
+
+// Files/directories to ignore for LLM context (binary, generated, etc.)
+const IGNORE_REGEX = new RegExp([
+  // Binary/Media files
+  '\\.(png|jpe?g|gif|webp|svg|ico|bmp|tiff|pdf)$',
+  '\\.(mp4|mov|avi|mkv|webm|flv|wmv)$', 
+  '\\.(mp3|wav|flac|aac|ogg|m4a)$',
+  '\\.(zip|tar|gz|rar|7z|bz2|xz)$',
+  '\\.(exe|dll|so|dylib|app|dmg|msi)$',
+  '\\.(doc|docx|xls|xlsx|ppt|pptx)$',
+  
+  // Lock files and generated content
+  '(package-lock\\.json|yarn\\.lock|pnpm-lock\\.yaml|bun\\.lockb?|Cargo\\.lock|Pipfile\\.lock|poetry\\.lock|composer\\.lock)$',
+  '\\.(log|tmp|temp|pid|cache|swp|swo|orig|rej)$',
+  '~$',
+  
+  // Build/dist/cache directories  
+  '(^|/)(\\.next|\\.nuxt|dist|build|out|target|coverage|\\.coverage)(/|$)',
+  '(^|/)(node_modules|vendor|venv|\\.venv|__pycache__|\\.pytest_cache)(/|$)',
+  
+  // IDE/Editor/OS files
+  '(^|/)(\\.vscode|\\.idea|\\.git|\\.svn|\\.hg)(/|$)',
+  '\\.(DS_Store|Thumbs\\.db)$',
+  
+  // Additional generated/config files that are usually not useful
+  '\\.(min\\.js|min\\.css)$',
+  '\\.map$', // source maps
+  '(^|/)(\\.env\\.local|\\.env\\.*.local)$' // local env files (keep .env.example)
+].join('|'), 'i');
 
 interface GitHubFile {
   name: string;
@@ -21,9 +63,12 @@ interface FileTreeNode {
   path: string;
   type: 'file' | 'dir';
   size?: number;
+  aggregateSize?: number;
   children?: FileTreeNode[];
   isExpanded?: boolean;
-  isChecked?: boolean;
+  isChecked?: boolean | 'partial'; // boolean for files, boolean|'partial' for dirs
+  isIgnored?: boolean;
+  depth?: number;
 }
 
 interface GitHubRepo {
@@ -34,13 +79,115 @@ interface GitHubRepo {
   stargazers_count: number;
 }
 
-export default function Home() {
+// Selection states for three-state toggles
+type SelectionState = 'none' | 'partial' | 'full';
+
+interface ExtensionStats {
+  extension: string;     // ".js" or "no extension" or ".gitignore"
+  totalBytes: number;    // sum of all files with this extension
+  fileCount: number;     // count of files with this extension
+  selectionState: SelectionState; // none/partial/full selection state
+}
+
+function QueryComponent({ searchQuery, previewContent }: { searchQuery: string; previewContent: string }) {
+  const { signIn, isAuthenticated } = useEcho();
+  const { openai } = useEchoOpenAI();
+  const [userQuestion, setUserQuestion] = useState('');
+  const [response, setResponse] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const constructPrompt = (question: string, repoName: string, context: string) => {
+    return `You're a coding assistant, I'm going to give you a user question about <repo>${repoName}</repo>, and you are to answer it as clearly as possible, do not be excessively verbose and get directly to the heart of the question and the answer.
+
+<user_question>
+${question}
+</user_question>
+
+<repo_context>
+${context}
+</repo_context>`;
+  };
+
+  const handleQuery = async () => {
+    if (!userQuestion.trim() || !isAuthenticated || !openai) return;
+    
+    setLoading(true);
+    try {
+      const repoName = searchQuery || 'repository';
+      const prompt = constructPrompt(userQuestion, repoName, previewContent);
+      
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+      });
+      
+      setResponse(completion.choices[0].message.content || '');
+    } catch (err) {
+      console.error('Query failed:', err);
+      setResponse('Error: Failed to get response from LLM');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="mt-6 border rounded-lg p-4">
+      <h2 className="text-lg font-semibold mb-4">Query Repository</h2>
+      
+      {!isAuthenticated ? (
+        <div className="text-center py-8">
+          <p className="text-gray-600 mb-4">Sign in to query the repository with AI</p>
+          <button
+            onClick={signIn}
+            className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+          >
+            Sign In to Echo
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div>
+            <input
+              type="text"
+              placeholder="Ask a question about the repository..."
+              value={userQuestion}
+              onChange={(e) => setUserQuestion(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={loading}
+              onKeyDown={(e) => e.key === 'Enter' && handleQuery()}
+            />
+          </div>
+          
+          <button
+            onClick={handleQuery}
+            disabled={loading || !userQuestion.trim()}
+            className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 disabled:bg-gray-400"
+          >
+            {loading ? 'Querying...' : 'Ask AI'}
+          </button>
+          
+          {response && (
+            <div className="mt-4 p-4 bg-gray-50 rounded border">
+              <h3 className="font-semibold mb-2">AI Response:</h3>
+              <div className="whitespace-pre-wrap text-sm">
+                {response}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HomeContent() {
   const [token, setToken] = useState<string | null>(null);
   const [octokit, setOctokit] = useState<Octokit | null>(null);
   const [files, setFiles] = useState<GitHubFile[]>([]);
   const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
   const [selectedBytes, setSelectedBytes] = useState<number>(0);
   const [previewContent, setPreviewContent] = useState<string>('');
+  const [extensionStats, setExtensionStats] = useState<ExtensionStats[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -135,6 +282,16 @@ export default function Home() {
     updatePreview();
   }, [selectedBytes, fileTree, searchQuery, octokit]);
 
+  // Update extension stats whenever file tree or selections change
+  useEffect(() => {
+    if (fileTree.length > 0) {
+      const stats = analyzeFileExtensions(fileTree);
+      setExtensionStats(stats);
+    } else {
+      setExtensionStats([]);
+    }
+  }, [fileTree, selectedBytes]); // Also trigger on selectedBytes change to catch individual toggles
+
   const exchangeToken = async (code: string) => {
     try {
       setLoading(true);
@@ -189,6 +346,7 @@ export default function Home() {
     setFileTree([]);
     setSelectedBytes(0);
     setPreviewContent('');
+    setExtensionStats([]);
     setSearchQuery('');
     setSearchResults([]);
     setShowResults(false);
@@ -229,7 +387,7 @@ export default function Home() {
     setSelectedIndex(-1);
   };
 
-  const fetchDirectoryContents = async (owner: string, repo: string, path: string = '', inheritCheckedState?: boolean): Promise<FileTreeNode[]> => {
+  const fetchAllDirectories = async (owner: string, repo: string, path: string = '', depth: number = 0, inheritCheckedState?: boolean): Promise<FileTreeNode[]> => {
     if (!octokit) return [];
     
     try {
@@ -243,33 +401,72 @@ export default function Home() {
       const nodes: FileTreeNode[] = [];
       
       for (const file of filesArray as GitHubFile[]) {
+        const isIgnored = IGNORE_REGEX.test(file.path) || IGNORE_REGEX.test(file.name);
+        
         const node: FileTreeNode = {
           name: file.name,
           path: file.path,
           type: file.type,
           size: file.type === 'file' ? file.size : undefined,
-          isExpanded: false,
-          isChecked: inheritCheckedState || false
+          depth: depth,
+          isExpanded: file.type === 'dir' && depth < DIRECTORY_DEPTH_CAP,
+          isIgnored: isIgnored,
+          isChecked: isIgnored 
+            ? false  // Ignored files are never checked
+            : inheritCheckedState !== undefined 
+              ? inheritCheckedState 
+              : file.type === 'dir' 
+                ? true 
+                : (file.size || 0) <= MAX_AUTO_SELECT_SIZE
         };
         
         if (file.type === 'dir') {
-          // For directories, we'll load children when expanded
-          node.children = [];
+          if (depth < DIRECTORY_DEPTH_CAP) {
+            // Recursively load children for directories within depth limit
+            node.children = await fetchAllDirectories(owner, repo, file.path, depth + 1, node.isChecked === true);
+          } else {
+            // Initialize empty children array for manual expansion later
+            node.children = [];
+          }
         }
         
         nodes.push(node);
       }
       
       // Sort directories first, then files
-      return nodes.sort((a, b) => {
+      const sortedNodes = nodes.sort((a, b) => {
         if (a.type === 'dir' && b.type === 'file') return -1;
         if (a.type === 'file' && b.type === 'dir') return 1;
         return a.name.localeCompare(b.name);
       });
+
+      // Calculate aggregate sizes for directories
+      return calculateDirectorySizes(sortedNodes);
     } catch (err) {
       console.error(`Failed to fetch directory contents for ${path}:`, err);
       return [];
     }
+  };
+
+  const calculateDirectorySizes = (nodes: FileTreeNode[]): FileTreeNode[] => {
+    return nodes.map(node => {
+      if (node.type === 'dir' && node.children) {
+        // Recursively calculate sizes for child directories first
+        node.children = calculateDirectorySizes(node.children);
+        
+        // Sum up all file sizes and child directory aggregate sizes
+        let totalSize = 0;
+        for (const child of node.children) {
+          if (child.type === 'file' && child.size) {
+            totalSize += child.size;
+          } else if (child.type === 'dir' && child.aggregateSize) {
+            totalSize += child.aggregateSize;
+          }
+        }
+        node.aggregateSize = totalSize;
+      }
+      return node;
+    });
   };
 
   const toggleDirectory = async (targetPath: string) => {
@@ -280,9 +477,10 @@ export default function Home() {
       return Promise.all(nodes.map(async (node) => {
         if (node.path === targetPath && node.type === 'dir') {
           if (!node.isExpanded) {
-            // Load children if not already loaded
+            // Load children if not already loaded (for directories beyond depth cap)
             if (!node.children || node.children.length === 0) {
-              const newChildren = await fetchDirectoryContents(owner, name, node.path);
+              const currentDepth = node.depth || 0;
+              const newChildren = await fetchAllDirectories(owner, name, node.path, currentDepth + 1);
               // Set children's checked state to match parent
               const updateChildrenChecked = (children: FileTreeNode[]): FileTreeNode[] => {
                 return children.map(child => ({
@@ -307,16 +505,111 @@ export default function Home() {
     setFileTree(await updateTree(fileTree));
   };
 
+  // Three-state selection logic functions
+  const getDirectorySelectionState = (node: FileTreeNode): SelectionState => {
+    if (node.type === 'file') {
+      return node.isChecked ? 'full' : 'none';
+    }
+    
+    if (!node.children || node.children.length === 0) {
+      return node.isChecked ? 'full' : 'none';
+    }
+    
+    const checkedCount = node.children.filter(child => {
+      const childState = getDirectorySelectionState(child);
+      return childState === 'full' || childState === 'partial';
+    }).length;
+    
+    const fullyCheckedCount = node.children.filter(child => {
+      const childState = getDirectorySelectionState(child);
+      return childState === 'full';
+    }).length;
+    
+    if (fullyCheckedCount === node.children.length) {
+      return 'full';
+    } else if (checkedCount > 0) {
+      return 'partial';
+    } else {
+      return 'none';
+    }
+  };
+  
+  const updateDirectoryStates = (nodes: FileTreeNode[]): FileTreeNode[] => {
+    return nodes.map(node => {
+      if (node.type === 'dir' && node.children) {
+        // First update children recursively
+        const updatedChildren = updateDirectoryStates(node.children);
+        
+        // Then calculate this directory's state based on children
+        const state = getDirectorySelectionState({ ...node, children: updatedChildren });
+        let isChecked: boolean | 'partial';
+        
+        switch (state) {
+          case 'none': isChecked = false; break;
+          case 'partial': isChecked = 'partial'; break;
+          case 'full': isChecked = true; break;
+        }
+        
+        return {
+          ...node,
+          children: updatedChildren,
+          isChecked
+        };
+      }
+      return node;
+    });
+  };
+  
+  const toggleExtensionSelection = (targetExtension: string) => {
+    const updateNodesForExtension = (nodes: FileTreeNode[], newState: boolean): FileTreeNode[] => {
+      return nodes.map(node => {
+        if (node.type === 'file' && !node.isIgnored) {
+          const ext = getFileExtension(node.name);
+          if (ext === targetExtension) {
+            return { ...node, isChecked: newState };
+          }
+        }
+        
+        if (node.children) {
+          return { ...node, children: updateNodesForExtension(node.children, newState) };
+        }
+        
+        return node;
+      });
+    };
+    
+    // Find current state of this extension
+    const currentStats = extensionStats.find(stat => stat.extension === targetExtension);
+    const currentState = currentStats?.selectionState || 'none';
+    
+    // Cycle through states: none -> full -> none (skip partial for user clicks)
+    // When user clicks partial, they want it to go to full
+    let newState: boolean;
+    if (currentState === 'none' || currentState === 'partial') {
+      newState = true; // Select all files with this extension
+    } else {
+      newState = false; // Deselect all files with this extension
+    }
+    
+    // Update file tree with new extension selection
+    const updatedTree = updateNodesForExtension(fileTree, newState);
+    
+    // Update directory states based on the new file selections
+    setFileTree(updateDirectoryStates(updatedTree));
+  };
+
   const toggleCheckbox = (targetPath: string) => {
     const updateNodeChecked = (nodes: FileTreeNode[]): FileTreeNode[] => {
       return nodes.map((node) => {
         if (node.path === targetPath) {
+          // For user clicks, cycle: false -> true -> false (skip partial)
           const newChecked = !node.isChecked;
-          // Update all children to match parent state
+          
+          // Update all children to match parent state (recursive propagation down)
           const updateChildren = (children: FileTreeNode[]): FileTreeNode[] => {
             return children.map(child => ({
               ...child,
-              isChecked: newChecked,
+              isChecked: child.isIgnored ? false : newChecked,
               children: child.children ? updateChildren(child.children) : undefined
             }));
           };
@@ -327,7 +620,7 @@ export default function Home() {
             children: node.children ? updateChildren(node.children) : undefined
           };
         } else if (node.children) {
-          // Recursively update children, but don't change this node's state
+          // Recursively update children
           return {
             ...node,
             children: updateNodeChecked(node.children)
@@ -337,7 +630,11 @@ export default function Home() {
       });
     };
 
-    setFileTree(updateNodeChecked(fileTree));
+    // Update tree with new selections
+    const updatedTree = updateNodeChecked(fileTree);
+    
+    // Propagate states up to parents
+    setFileTree(updateDirectoryStates(updatedTree));
   };
 
   const calculateSelectedBytes = async (nodes: FileTreeNode[]): Promise<number> => {
@@ -356,7 +653,7 @@ export default function Home() {
             total += await calculateSelectedBytes(node.children);
           } else {
             // If children aren't loaded, fetch them to calculate size
-            const children = await fetchDirectoryContents(owner, name, node.path, node.isChecked);
+            const children = await fetchAllDirectories(owner, name, node.path, 0, node.isChecked === true);
             total += await calculateSelectedBytes(children);
           }
         }
@@ -382,7 +679,7 @@ export default function Home() {
             selectedFiles = selectedFiles.concat(await collectSelectedFiles(node.children));
           } else {
             // If children aren't loaded, fetch them
-            const children = await fetchDirectoryContents(owner, name, node.path, node.isChecked);
+            const children = await fetchAllDirectories(owner, name, node.path, 0, node.isChecked === true);
             selectedFiles = selectedFiles.concat(await collectSelectedFiles(children));
           }
         }
@@ -455,7 +752,7 @@ export default function Home() {
     
     const [owner, name] = repo.split('/');
     try {
-      const tree = await fetchDirectoryContents(owner, name);
+      const tree = await fetchAllDirectories(owner, name);
       setFileTree(tree);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch files');
@@ -465,25 +762,186 @@ export default function Home() {
     }
   };
 
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+  };
+
+  const getFileExtension = (filename: string): string => {
+    if (!filename.includes('.')) return 'no extension';
+    if (filename.startsWith('.') && filename.indexOf('.', 1) === -1) {
+      return filename; // .gitignore, .env, etc.
+    }
+    const parts = filename.split('.');
+    return '.' + parts[parts.length - 1].toLowerCase();
+  };
+
+  const analyzeFileExtensions = (nodes: FileTreeNode[]): ExtensionStats[] => {
+    const extensionMap = new Map<string, { totalBytes: number; fileCount: number; selectedCount: number }>();
+    
+    const traverseNodes = (nodeList: FileTreeNode[]) => {
+      for (const node of nodeList) {
+        if (node.type === 'file' && !node.isIgnored && node.size) {
+          const ext = getFileExtension(node.name);
+          const existing = extensionMap.get(ext) || { totalBytes: 0, fileCount: 0, selectedCount: 0 };
+          
+          extensionMap.set(ext, {
+            totalBytes: existing.totalBytes + node.size,
+            fileCount: existing.fileCount + 1,
+            selectedCount: existing.selectedCount + (node.isChecked ? 1 : 0)
+          });
+        }
+        
+        if (node.children && node.isExpanded) {
+          traverseNodes(node.children);
+        }
+      }
+    };
+    
+    traverseNodes(nodes);
+    
+    return Array.from(extensionMap.entries())
+      .map(([extension, stats]) => {
+        let selectionState: SelectionState;
+        if (stats.selectedCount === 0) {
+          selectionState = 'none';
+        } else if (stats.selectedCount === stats.fileCount) {
+          selectionState = 'full';
+        } else {
+          selectionState = 'partial';
+        }
+        
+        return {
+          extension,
+          totalBytes: stats.totalBytes,
+          fileCount: stats.fileCount,
+          selectionState
+        };
+      })
+      .sort((a, b) => b.totalBytes - a.totalBytes)
+      .slice(0, 5);
+  };
+
+  const selectAll = () => {
+    const updateAllNodes = (nodes: FileTreeNode[]): FileTreeNode[] => {
+      return nodes.map(node => ({
+        ...node,
+        isChecked: node.isIgnored ? false : true, // Respect ignore list
+        children: node.children ? updateAllNodes(node.children) : undefined
+      }));
+    };
+    
+    // Update all nodes to selected, then update directory states
+    const updatedTree = updateAllNodes(fileTree);
+    setFileTree(updateDirectoryStates(updatedTree));
+  };
+
+  const deselectAll = () => {
+    const updateAllNodes = (nodes: FileTreeNode[]): FileTreeNode[] => {
+      return nodes.map(node => ({
+        ...node,
+        isChecked: false,
+        children: node.children ? updateAllNodes(node.children) : undefined
+      }));
+    };
+    
+    // Update all nodes to deselected, then update directory states
+    const updatedTree = updateAllNodes(fileTree);
+    setFileTree(updateDirectoryStates(updatedTree));
+  };
+
+  const ExtensionToggles = () => {
+    if (extensionStats.length === 0) return null;
+    
+    return (
+      <div className="mb-4 p-3 bg-gray-50 border border-gray-200 rounded">
+        <div className="flex justify-between items-start mb-2">
+          <h3 className="text-sm font-medium text-gray-700">Top File Types:</h3>
+          <div className="flex gap-2">
+            <button
+              onClick={selectAll}
+              className="inline-flex items-center px-2 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 transition-colors"
+            >
+              Select All
+            </button>
+            <button
+              onClick={deselectAll}
+              className="inline-flex items-center px-2 py-1 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded hover:bg-red-100 transition-colors"
+            >
+              Deselect All
+            </button>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {extensionStats.map((stat) => {
+            const getStateIcon = (state: SelectionState) => {
+              switch (state) {
+                case 'none': return '✗';
+                case 'partial': return '◐';
+                case 'full': return '✓';
+              }
+            };
+            
+            const getStateClass = (state: SelectionState) => {
+              switch (state) {
+                case 'none': return 'bg-gray-100 text-gray-600 border border-gray-200 hover:bg-gray-200';
+                case 'partial': return 'bg-yellow-100 text-yellow-800 border border-yellow-200';
+                case 'full': return 'bg-green-100 text-green-800 border border-green-200';
+              }
+            };
+            
+            return (
+              <button
+                key={stat.extension}
+                onClick={() => toggleExtensionSelection(stat.extension)}
+                className={`inline-flex items-center px-3 py-1 rounded-md text-xs font-medium transition-colors ${getStateClass(stat.selectionState)}`}
+              >
+                <span className="font-mono">
+                  {stat.extension === 'no extension' ? 'no ext' : stat.extension}
+                </span>
+                <span className="ml-1">
+                  ({formatBytes(stat.totalBytes)}, {stat.fileCount} files)
+                </span>
+                <span className="ml-1">
+                  {getStateIcon(stat.selectionState)}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   const TreeNode = ({ node, depth = 0 }: { node: FileTreeNode; depth?: number }) => {
     const indentStyle = { paddingLeft: `${depth * 20}px` };
     
     return (
       <div key={node.path}>
         <div 
-          className={`flex items-center py-1 px-2 hover:bg-gray-50 select-none ${
-            node.type === 'dir' ? 'font-medium' : ''
-          }`}
+          className={`flex items-center py-1 px-2 select-none ${
+            node.isIgnored 
+              ? 'text-gray-400 bg-gray-50' 
+              : 'hover:bg-gray-50'
+          } ${node.type === 'dir' ? 'font-medium' : ''}`}
           style={indentStyle}
+          title={node.isIgnored ? 'File ignored (binary/generated/cache)' : undefined}
         >
           <input
             type="checkbox"
-            checked={node.isChecked || false}
+            checked={node.isChecked === true}
+            ref={(input) => {
+              if (input) input.indeterminate = node.isChecked === 'partial';
+            }}
+            disabled={node.isIgnored}
             onChange={(e) => {
               e.stopPropagation();
               toggleCheckbox(node.path);
             }}
-            className="mr-2 w-4 h-4"
+            className={`mr-2 w-4 h-4 ${node.isIgnored ? 'opacity-50 cursor-not-allowed' : ''}`}
           />
           {node.type === 'dir' && (
             <span 
@@ -505,7 +963,22 @@ export default function Home() {
           </span>
           {node.type === 'file' && node.size && (
             <span className="text-gray-500 text-xs ml-2">
-              {node.size.toLocaleString()} bytes
+              {formatBytes(node.size)}
+            </span>
+          )}
+          {node.type === 'dir' && node.aggregateSize !== undefined && (
+            <span className="text-gray-500 text-xs ml-2">
+              ({formatBytes(node.aggregateSize)})
+            </span>
+          )}
+          {node.type === 'dir' && node.depth === DIRECTORY_DEPTH_CAP && (
+            <span className="text-blue-500 text-xs ml-2">
+              (expandable)
+            </span>
+          )}
+          {node.isIgnored && (
+            <span className="text-gray-400 text-xs ml-2">
+              (ignored)
             </span>
           )}
         </div>
@@ -595,6 +1068,7 @@ export default function Home() {
       {fileTree.length > 0 && (
         <div className="border rounded-lg p-4">
           <h2 className="text-lg font-semibold mb-4">File Tree:</h2>
+          <ExtensionToggles />
           <div className="font-mono text-sm bg-gray-50 rounded border p-2 max-h-96 overflow-y-auto">
             {fileTree.map((node) => (
               <TreeNode key={node.path} node={node} />
@@ -627,6 +1101,18 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      {previewContent && (
+        <QueryComponent searchQuery={searchQuery} previewContent={previewContent} />
+      )}
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <EchoProvider config={echoConfig}>
+      <HomeContent />
+    </EchoProvider>
   );
 }
