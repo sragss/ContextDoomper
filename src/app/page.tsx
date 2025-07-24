@@ -1,103 +1,183 @@
-import Image from "next/image";
+// app/page.tsx
+'use client';
+import { useState, useEffect } from 'react';
+import { Octokit } from '@octokit/rest';
+
+const CLIENT_ID = process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID!;
+
+interface GitHubFile {
+  name: string;
+  path: string;
+  sha: string;
+  size: number;
+  url: string;
+  type: 'file' | 'dir';
+  download_url?: string | null;
+}
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [token, setToken] = useState<string | null>(null);
+  const [octokit, setOctokit] = useState<Octokit | null>(null);
+  const [files, setFiles] = useState<GitHubFile[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  useEffect(() => {
+    // Check for code in URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const code = urlParams.get('code');
+    
+    if (code && !token) {
+      exchangeToken(code);
+    }
+
+    // Check for stored token
+    const storedToken = localStorage.getItem('github_token');
+    if (storedToken) {
+      setToken(storedToken);
+      setOctokit(new Octokit({ auth: storedToken }));
+    }
+  }, [token]);
+
+  const exchangeToken = async (code: string) => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      const response = await fetch('/api/github/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Token exchange failed');
+      }
+      
+      if (data.access_token) {
+        setToken(data.access_token);
+        localStorage.setItem('github_token', data.access_token);
+        setOctokit(new Octokit({ auth: data.access_token }));
+        
+        // Clean URL
+        window.history.replaceState({}, document.title, '/');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Token exchange failed');
+      console.error('Token exchange failed:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const login = () => {
+    window.location.href = `https://github.com/login/oauth/authorize?client_id=${CLIENT_ID}&scope=repo`;
+  };
+
+  const logout = () => {
+    setToken(null);
+    setOctokit(null);
+    setFiles([]);
+    localStorage.removeItem('github_token');
+  };
+
+  const fetchFiles = async (repo: string) => {
+    if (!octokit) return;
+    
+    setLoading(true);
+    setError(null);
+    
+    const [owner, name] = repo.split('/');
+    try {
+      const { data } = await octokit.repos.getContent({ 
+        owner, 
+        repo: name,
+        path: '' 
+      });
+      
+      // getContent returns a single file or an array of files
+      const filesArray = Array.isArray(data) ? data : [data];
+      setFiles(filesArray as GitHubFile[]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch files');
+      console.error('Failed to fetch files:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!token) {
+    return (
+      <div className="p-8">
+        <h1 className="text-2xl font-bold mb-4">GitHub File Browser</h1>
+        <button 
+          onClick={login}
+          className="bg-black text-white px-4 py-2 rounded hover:bg-gray-800"
+          disabled={loading}
+        >
+          {loading ? 'Processing...' : 'Login with GitHub'}
+        </button>
+        {error && (
+          <p className="text-red-500 mt-2">{error}</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-8">
+      <h1 className="text-2xl font-bold mb-4">GitHub File Browser</h1>
+      
+      <button 
+        onClick={logout} 
+        className="bg-red-500 text-white px-4 py-2 rounded mb-4 hover:bg-red-600"
+      >
+        Logout
+      </button>
+      
+      <div className="mb-4 space-x-2">
+        <button 
+          onClick={() => fetchFiles('facebook/react')}
+          className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 disabled:bg-gray-400"
+          disabled={loading}
+        >
+          Fetch React Repo
+        </button>
+        <button 
+          onClick={() => fetchFiles('vercel/next.js')}
+          className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 disabled:bg-gray-400"
+          disabled={loading}
+        >
+          Fetch Next.js Repo
+        </button>
+      </div>
+
+      {error && (
+        <p className="text-red-500 mb-4">{error}</p>
+      )}
+
+      {loading && (
+        <p className="text-gray-600">Loading...</p>
+      )}
+
+      {files.length > 0 && (
+        <div className="border rounded-lg p-4">
+          <h2 className="text-lg font-semibold mb-2">Files:</h2>
+          <ul className="space-y-1">
+            {files.map((file) => (
+              <li key={file.sha} className="flex items-center space-x-2">
+                <span>{file.type === 'dir' ? '📁' : '📄'}</span>
+                <span>{file.name}</span>
+                <span className="text-gray-500 text-sm">
+                  {file.type === 'file' && `(${file.size} bytes)`}
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      )}
     </div>
   );
 }
