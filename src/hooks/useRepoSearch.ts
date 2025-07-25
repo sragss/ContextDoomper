@@ -28,7 +28,6 @@ export function useRepoSearch(initialQuery: string = '') {
           per_page: 10
         });
         setSearchResults(data.items);
-        setShowResults(true);
         setSelectedIndex(-1);
       } catch (err) {
         console.error('Search failed:', err);

@@ -135,25 +135,58 @@ export function useFileTree(owner: string, repo: string) {
         updateTree([...sortedNodes]);
       }
 
-      // Now recursively load subdirectories
-      for (const node of sortedNodes) {
-        if (node.type === 'dir' && depth < DIRECTORY_DEPTH_CAP) {
-          node.children = await fetchAllDirectories(
-            owner, 
-            repo, 
-            node.path, 
-            depth + 1, 
-            node.isChecked === true,
-            updateTree
+      // Parallel processing of subdirectories with batches
+      const directoryNodes = sortedNodes.filter(node => node.type === 'dir');
+      const BATCH_SIZE = 4; // Process 4 directories simultaneously
+      
+      if (directoryNodes.length > 0 && depth < DIRECTORY_DEPTH_CAP) {
+        // Create batches of directories
+        const batches: FileTreeNode[][] = [];
+        for (let i = 0; i < directoryNodes.length; i += BATCH_SIZE) {
+          batches.push(directoryNodes.slice(i, i + BATCH_SIZE));
+        }
+        
+        // Process batches in parallel
+        for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+          const batch = batches[batchIndex];
+          const startDir = batchIndex * BATCH_SIZE + 1;
+          const endDir = Math.min((batchIndex + 1) * BATCH_SIZE, directoryNodes.length);
+          
+          // Update loading status for directory batch
+          if (typeof setLoadingStatus === 'function') {
+            setLoadingStatus(`Loading directories ${startDir}-${endDir} of ${directoryNodes.length} in ${displayPath}...`);
+          }
+          
+          // Load batch of directories in parallel
+          const batchPromises = batch.map(node => 
+            fetchAllDirectories(
+              owner, 
+              repo, 
+              node.path, 
+              depth + 1, 
+              node.isChecked === true,
+              updateTree
+            )
           );
           
-          // Update tree progressively as each directory loads
+          const batchResults = await Promise.all(batchPromises);
+          
+          // Assign results back to nodes
+          for (let i = 0; i < batch.length; i++) {
+            batch[i].children = batchResults[i];
+          }
+          
+          // Update tree progressively as each batch loads
           if (updateTree && depth === 0) {
             updateTree([...sortedNodes]);
           }
-        } else if (node.type === 'dir') {
-          // Initialize empty children array for manual expansion later
-          node.children = [];
+        }
+      } else {
+        // Initialize empty children arrays for directories beyond depth cap or if no directories
+        for (const node of sortedNodes) {
+          if (node.type === 'dir') {
+            node.children = [];
+          }
         }
       }
 
