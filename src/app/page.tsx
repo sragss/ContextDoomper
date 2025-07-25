@@ -22,7 +22,9 @@ function HomeContent() {
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="max-w-md w-full bg-white rounded-lg shadow-md p-8">
           <div className="text-center">
-            <h1 className="text-3xl font-bold text-gray-900 mb-2">ContextDoomper</h1>
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 via-purple-600 to-cyan-500 bg-clip-text text-transparent tracking-wider font-mono mb-2">
+              CONTEXT_DOOMPER
+            </h1>
             <p className="text-gray-600 mb-8">GitHub repository browser and context extractor</p>
             <p className="text-gray-500 text-sm mb-6">Please sign in with GitHub to get started</p>
             <button
@@ -44,7 +46,9 @@ function HomeContent() {
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-4xl mx-auto pt-12 px-4">
         <div className="text-center mb-12">
-          <h1 className="text-4xl font-bold text-gray-900 mb-4">ContextDoomper</h1>
+          <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-600 via-purple-600 to-cyan-500 bg-clip-text text-transparent tracking-wider font-mono mb-4">
+            CONTEXT_DOOMPER
+          </h1>
           <p className="text-xl text-gray-600 mb-8">
             Browse GitHub repositories and extract context for AI analysis
           </p>

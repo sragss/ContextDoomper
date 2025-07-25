@@ -27,6 +27,13 @@ function RepoContent() {
   // Call useFileTree ONCE here
   const fileTreeState = useFileTree(owner, repo);
 
+  // Redirect to home if not logged in
+  useEffect(() => {
+    if (!token) {
+      router.push('/');
+    }
+  }, [token, router]);
+
   const handleRepoSelect = (selectedRepo: GitHubRepo) => {
     router.push(`/${selectedRepo.full_name}`);
   };
@@ -34,9 +41,12 @@ function RepoContent() {
   if (!token) {
     return (
       <div className="p-8">
-        <h1 className="text-2xl font-bold mb-4">ContextDoomper</h1>
-        <p className="text-lg mb-4">Repository: <span className="font-mono text-blue-600">{fullRepoName}</span></p>
-        <p className="text-gray-600 mb-4">Please sign in with GitHub to access this repository.</p>
+        <div className="text-center">
+          <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-600 via-purple-600 to-cyan-500 bg-clip-text text-transparent tracking-wider font-mono mb-4">
+            CONTEXT_DOOMPER
+          </h1>
+          <p className="text-gray-600 mb-4">Redirecting to home page...</p>
+        </div>
       </div>
     );
   }
@@ -45,7 +55,9 @@ function RepoContent() {
     <div className="p-8">
       <div className="flex justify-between items-center mb-4">
         <div>
-          <h1 className="text-2xl font-bold">ContextDoomper</h1>
+          <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-600 via-purple-600 to-cyan-500 bg-clip-text text-transparent tracking-wider font-mono">
+            CONTEXT_DOOMPER
+          </h1>
           <p className="text-gray-600">Repository: <span className="font-mono text-blue-600">{fullRepoName}</span></p>
         </div>
         <div className="flex items-center space-x-4">
