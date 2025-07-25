@@ -24,7 +24,8 @@ function RepoContent() {
   const fullRepoName = `${owner}/${repo}`;
   
   const { token, logout } = useGithubToken();
-  const { previewContent } = useFileTree(owner, repo);
+  // Call useFileTree ONCE here
+  const fileTreeState = useFileTree(owner, repo);
 
   const handleRepoSelect = (selectedRepo: GitHubRepo) => {
     router.push(`/${selectedRepo.full_name}`);
@@ -64,11 +65,12 @@ function RepoContent() {
         className="mb-4"
       />
 
-      <FileTree owner={owner} repo={repo} />
+      {/* Pass all fileTreeState props to FileTree */}
+      <FileTree {...fileTreeState} owner={owner} repo={repo} />
 
-      <Preview content={previewContent} />
+      <Preview content={fileTreeState.previewContent} />
 
-      <QueryComponent searchQuery={fullRepoName} previewContent={previewContent} />
+      <QueryComponent searchQuery={fullRepoName} previewContent={fileTreeState.previewContent} />
     </div>
   );
 }

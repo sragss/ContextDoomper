@@ -1,29 +1,45 @@
 // src/components/FileTree/FileTree.tsx
 'use client';
 import { useState, useEffect } from 'react';
-import { useFileTree } from '@/hooks/useFileTree';
 import { ExtensionToggles } from './ExtensionToggles';
 import { TreeNode } from './TreeNode';
+import { FileTreeNode, ExtensionStats } from '@/types';
 
 interface FileTreeProps {
   owner: string;
   repo: string;
+  fileTree: FileTreeNode[];
+  selectedBytes: number;
+  extensionStats: ExtensionStats[];
+  loading: boolean;
+  loadingStatus: string;
+  previewLoading: boolean;
+  previewProgress: string;
+  error: string | null;
+  toggleDirectory: (targetPath: string) => void;
+  toggleCheckbox: (targetPath: string) => void;
+  toggleExtensionSelection: (targetExtension: string) => void;
+  selectAll: () => void;
+  deselectAll: () => void;
 }
 
-export function FileTree({ owner, repo }: FileTreeProps) {
-  const {
-    fileTree,
-    selectedBytes,
-    extensionStats,
-    loading,
-    loadingStatus,
-    error,
-    toggleDirectory,
-    toggleCheckbox,
-    toggleExtensionSelection,
-    selectAll,
-    deselectAll,
-  } = useFileTree(owner, repo);
+export function FileTree({
+  owner,
+  repo,
+  fileTree,
+  selectedBytes,
+  extensionStats,
+  loading,
+  loadingStatus,
+  previewLoading,
+  previewProgress,
+  error,
+  toggleDirectory,
+  toggleCheckbox,
+  toggleExtensionSelection,
+  selectAll,
+  deselectAll,
+}: FileTreeProps) {
 
   // CLI-style spinner characters
   const spinnerChars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -31,14 +47,14 @@ export function FileTree({ owner, repo }: FileTreeProps) {
 
   // Animate the CLI spinner
   useEffect(() => {
-    if (!loadingStatus) return;
+    if (!loadingStatus && !previewProgress) return;
     
     const interval = setInterval(() => {
       setSpinnerIndex(prev => (prev + 1) % spinnerChars.length);
     }, 100);
     
     return () => clearInterval(interval);
-  }, [loadingStatus, spinnerChars.length]);
+  }, [loadingStatus, previewProgress, spinnerChars.length]);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -81,7 +97,7 @@ export function FileTree({ owner, repo }: FileTreeProps) {
       />
       
       <div className="font-mono text-sm bg-gray-50 rounded border p-2 max-h-96 overflow-y-auto">
-        {fileTree.map((node) => (
+        {fileTree.map((node: FileTreeNode) => (
           <TreeNode 
             key={node.path} 
             node={node}
@@ -96,13 +112,13 @@ export function FileTree({ owner, repo }: FileTreeProps) {
         <div className="flex items-center justify-between">
           {/* Progressive Loading Status - Left Side */}
           <div className="flex items-center space-x-2 text-blue-700">
-            {loadingStatus ? (
+            {(loadingStatus || previewProgress) ? (
               <>
                 <div className="font-mono text-blue-700 text-sm select-none">
                   {spinnerChars[spinnerIndex]}
                 </div>
                 <div className="text-xs font-medium">
-                  {loadingStatus}
+                  {previewProgress || loadingStatus}
                 </div>
               </>
             ) : (

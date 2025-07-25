@@ -69,6 +69,22 @@ export function GithubAuthProvider({ children }: GithubAuthProviderProps) {
     return () => clearInterval(interval);
   }, [octokit]);
 
+  // Expose a manual refresh function
+  const refreshRateLimit = async () => {
+    if (!octokit) return;
+    try {
+      const { data } = await octokit.rateLimit.get();
+      setRateLimit({
+        limit: data.rate.limit,
+        remaining: data.rate.remaining,
+        reset: data.rate.reset,
+        used: data.rate.used,
+      });
+    } catch (err) {
+      console.error('Failed to refresh rate limit:', err);
+    }
+  };
+
   const exchangeToken = async (code: string) => {
     try {
       setLoading(true);
@@ -130,6 +146,7 @@ export function GithubAuthProvider({ children }: GithubAuthProviderProps) {
     loading,
     error,
     rateLimit,
+    refreshRateLimit, // add to context
   };
 
   return (

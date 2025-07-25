@@ -54,4 +54,5 @@ export interface GithubAuthContextType {
     reset: number;
     used: number;
   } | null;
+  refreshRateLimit?: () => Promise<void>;
 }

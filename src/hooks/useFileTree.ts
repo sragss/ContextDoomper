@@ -12,6 +12,8 @@ export function useFileTree(owner: string, repo: string) {
   const [previewContent, setPreviewContent] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState<string>('');
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewProgress, setPreviewProgress] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
   // Load files when owner/repo/octokit changes
@@ -45,18 +47,31 @@ export function useFileTree(owner: string, repo: string) {
     }
   }, [fileTree, selectedBytes]);
 
-  // Update preview content whenever selections change
+
+  // Update preview content whenever selections change (debounced)
   useEffect(() => {
-    const updatePreview = async () => {
+    const timeoutId = setTimeout(async () => {
       if (fileTree.length > 0 && selectedBytes > 0) {
-        const content = await generateXMLPreview();
-        setPreviewContent(content);
+        setPreviewLoading(true);
+        setPreviewProgress('');
+        try {
+          const content = await generateXMLPreview();
+          setPreviewContent(content);
+        } catch (err) {
+          console.error('Preview generation failed:', err);
+          setPreviewContent('');
+        } finally {
+          setPreviewLoading(false);
+          setPreviewProgress('');
+        }
       } else {
         setPreviewContent('');
+        setPreviewLoading(false);
+        setPreviewProgress('');
       }
-    };
+    }, 500); // 500ms debounce
     
-    updatePreview();
+    return () => clearTimeout(timeoutId);
   }, [selectedBytes, fileTree]);
 
   const fetchAllDirectories = async (
@@ -432,19 +447,47 @@ export function useFileTree(owner: string, repo: string) {
     }
     xmlContent += '  </file_tree>\n\n';
     
-    // Add file contents
-    for (const file of selectedFiles) {
-      const content = await fetchFileContent(file);
-      const escapedContent = content
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&apos;');
+    // Parallel processing with batches
+    const BATCH_SIZE = 8; // Download 8 files simultaneously
+    const totalFiles = selectedFiles.length;
+    let processedFiles = 0;
+    
+    // Create batches
+    const batches: FileTreeNode[][] = [];
+    for (let i = 0; i < selectedFiles.length; i += BATCH_SIZE) {
+      batches.push(selectedFiles.slice(i, i + BATCH_SIZE));
+    }
+    
+    // Process batches in parallel
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      const batch = batches[batchIndex];
+      const startFile = processedFiles + 1;
+      const endFile = Math.min(processedFiles + batch.length, totalFiles);
       
-      xmlContent += `  <file path="${file.path}">\n`;
-      xmlContent += `${escapedContent}\n`;
-      xmlContent += `  </file>\n`;
+      // Update progress
+      setPreviewProgress(`Downloading ${startFile}-${endFile} of ${totalFiles} files...`);
+      
+      // Download batch in parallel
+      const batchPromises = batch.map(file => fetchFileContent(file));
+      const batchContents = await Promise.all(batchPromises);
+      
+      // Add batch results to XML
+      for (let i = 0; i < batch.length; i++) {
+        const file = batch[i];
+        const content = batchContents[i];
+        const escapedContent = content
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&apos;');
+        
+        xmlContent += `  <file path="${file.path}">\n`;
+        xmlContent += `${escapedContent}\n`;
+        xmlContent += `  </file>\n`;
+      }
+      
+      processedFiles += batch.length;
     }
     
     xmlContent += '</repository>';
@@ -485,7 +528,6 @@ export function useFileTree(owner: string, repo: string) {
         } else {
           selectionState = 'partial';
         }
-        
         return {
           extension,
           totalBytes: stats.totalBytes,
@@ -493,8 +535,7 @@ export function useFileTree(owner: string, repo: string) {
           selectionState
         };
       })
-      .sort((a, b) => b.totalBytes - a.totalBytes)
-      .slice(0, 5);
+      .sort((a, b) => b.totalBytes - a.totalBytes);
   };
 
   const selectAll = () => {
@@ -553,7 +594,7 @@ export function useFileTree(owner: string, repo: string) {
       setLoading(false);
     }
   };
-
+  
   return {
     fileTree,
     selectedBytes,
@@ -561,6 +602,8 @@ export function useFileTree(owner: string, repo: string) {
     previewContent,
     loading,
     loadingStatus,
+    previewLoading,
+    previewProgress,
     error,
     toggleDirectory,
     toggleCheckbox,
